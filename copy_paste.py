@@ -42,10 +42,10 @@ def extract_bboxes(masks):
             x1, x2 = xindices[[0, -1]]
             y2 += 1
             x2 += 1
-            y1 /= h
-            y2 /= h
-            x1 /= w
-            x2 /= w
+            y1 /= w
+            y2 /= w
+            x1 /= h
+            x2 /= h
         else:
             y1, x1, y2, x2 = 0, 0, 0, 0
 
@@ -53,24 +53,29 @@ def extract_bboxes(masks):
 
     return bboxes
 
-def bboxes_copy_paste(bboxes, paste_bboxes, masks, alpha):
-    if paste_bboxes is not None:
+def bboxes_copy_paste(bboxes, paste_bboxes, masks, paste_masks, alpha, key):
+    if key == 'paste_bboxes':
+        return bboxes
+    elif paste_bboxes is not None:
         masks = masks_copy_paste(masks, paste_masks=[], alpha=alpha)
         adjusted_bboxes = extract_bboxes(masks)
 
+        #only keep the bounding boxes for objects listed in bboxes
+        mask_indices = [box[-1] for box in bboxes]
+        adjusted_bboxes = [adjusted_bboxes[idx] for idx in mask_indices]
         #append bbox tails (classes, etc.)
         adjusted_bboxes = [bbox + tail[4:] for bbox, tail in zip(adjusted_bboxes, bboxes)]
 
         #adjust paste_bboxes mask indices to avoid overlap
-        if adjusted_bboxes:
+        if len(masks) > 0:
             max_mask_index = len(masks)
         else:
             max_mask_index = 0
 
         paste_mask_indices = [max_mask_index + ix for ix in range(len(paste_bboxes))]
-        adjusted_paste_bboxes = []
-        for mi, pbox in zip(paste_mask_indices, paste_bboxes):
-            adjusted_paste_bboxes.append(pbox[:-1] + tuple([mi]))
+        paste_bboxes = [pbox[:-1] + (pmi,) for pbox, pmi in zip(paste_bboxes, paste_mask_indices)]
+        adjusted_paste_bboxes = extract_bboxes(paste_masks)
+        adjusted_paste_bboxes = [apbox + tail[4:] for apbox, tail in zip(adjusted_paste_bboxes, paste_bboxes)]
 
         bboxes = adjusted_bboxes + adjusted_paste_bboxes
 
@@ -196,7 +201,7 @@ class CopyPaste(A.DualTransform):
         return [
             "paste_image",
             "paste_mask",
-            "paste_masks",
+            "paste_masks"
         ]
 
     def apply_with_params(self, params, force_apply=False, **kwargs):  # skipcq: PYL-W0613
@@ -208,6 +213,7 @@ class CopyPaste(A.DualTransform):
             if arg is not None and key not in self.ignore_kwargs:
                 target_function = self._get_target_function(key)
                 target_dependencies = {k: kwargs[k] for k in self.target_dependence.get(key, [])}
+                target_dependencies['key'] = key
                 res[key] = target_function(arg, **dict(params, **target_dependencies))
             else:
                 res[key] = None
@@ -224,8 +230,8 @@ class CopyPaste(A.DualTransform):
     def apply_to_masks(self, masks, paste_masks, alpha, **params):
         return masks_copy_paste(masks, paste_masks, alpha)
 
-    def apply_to_bboxes(self, bboxes, paste_bboxes, param_masks, alpha, **params):
-        return bboxes_copy_paste(bboxes, paste_bboxes, param_masks, alpha)
+    def apply_to_bboxes(self, bboxes, paste_bboxes, param_masks, paste_masks, alpha, key, **params):
+        return bboxes_copy_paste(bboxes, paste_bboxes, param_masks, paste_masks, alpha, key)
 
     def apply_to_keypoints(self, keypoints, paste_keypoints, alpha, **params):
         raise NotImplementedError
@@ -289,7 +295,7 @@ def copy_paste_class(dataset_class):
 
         img_data = self.load_example(idx)
         if self.copy_paste is not None:
-            paste_idx = random.randint(0, self.__len__())
+            paste_idx = random.randint(0, self.__len__() - 1)
             paste_img_data = self.load_example(paste_idx)
             for k in list(paste_img_data.keys()):
                 paste_img_data['paste_' + k] = paste_img_data[k]
